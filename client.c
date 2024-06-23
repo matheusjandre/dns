@@ -1,11 +1,4 @@
-// server.c
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/ip.h>
+#include "libs/rawsocket.h"
 
 #define BUFFER_SIZE 1024
 
@@ -35,9 +28,6 @@ int main()
 
   // Point the IP header to the buffer
   iph = (struct iphdr *)buffer;
-
-  // Print the data portion
-  printf("Received: %s\n", buffer + sizeof(struct iphdr));
 
   close(sock);
   return 0;
