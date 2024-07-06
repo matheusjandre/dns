@@ -3,6 +3,19 @@
   "files.associations": {
     "ethernet.h": "c",
     "inet.h": "c",
-    "rawsocket.h": "c"
+    "rawsocket.h": "c",
+    "if_packet.h": "c",
+    "packet.h": "c",
+    "stdlib.h": "c",
+    "if.h": "c",
+    "string.h": "c",
+    "stdio.h": "c",
+    "socket.h": "c",
+    "stdint.h": "c",
+    "unistd.h": "c",
+    "errno.h": "c",
+    "protocol.h": "c",
+    "typeinfo": "c",
+    "ioctl.h": "c"
   }
 }
