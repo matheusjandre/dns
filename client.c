@@ -4,6 +4,9 @@
 #include <fcntl.h>
 #include <errno.h>
 
+#define INITIAL_CLIENT_NETWORK_STATE SENDING
+#define INITIAL_CLIENT_SUBSTATE IDLE
+
 enum menu_option
 {
   LIST = 1,
@@ -82,17 +85,19 @@ void start_client(client_t **client, char *interface_label)
     exit(EXIT_FAILURE);
   }
 
-  (*client)->network->state = SENDING;
+  (*client)->network->state = INITIAL_CLIENT_NETWORK_STATE;
   (*client)->network->socket = create_socket(interface_label);
+}
 
-  uint8_t dest_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+void reset_client(client_t **client)
+{
+  if ((*client)->network->last_packet)
+  {
+    free((*client)->network->last_packet);
+    (*client)->network->last_packet = NULL;
+  }
 
-  memset(&(*client)->network->address, 0, sizeof((*client)->network->address));
-  (*client)->network->address.sll_family = AF_PACKET;
-  (*client)->network->address.sll_protocol = htons(ETH_P_ALL);
-  (*client)->network->address.sll_ifindex = if_nametoindex(interface_label);
-  (*client)->network->address.sll_halen = ETH_ALEN;
-  memcpy((*client)->network->address.sll_addr, dest_mac, ETH_ALEN);
+  (*client)->network->state = INITIAL_CLIENT_NETWORK_STATE;
 }
 
 void stop_client(client_t **client)
@@ -128,7 +133,7 @@ void list_files(client_t *client)
   //     if (client->packet_buffer)
   //       free(client->packet_buffer);
 
-  //     listen_socket(client);
+  //     listen_packet(client);
   //   }
 
   //   for (int i = 0; i < client->packet_count; i++)
@@ -176,7 +181,7 @@ int main(int argc, char *argv[])
     case RECEIVING:
     {
       // If nothing is received, continue
-      if (!listen_socket(current, client->network))
+      if (!listen_packet(current, client->network))
         continue;
 
       // If the packet is the same as the last one, continue
@@ -201,6 +206,10 @@ int main(int argc, char *argv[])
         continue;
       }
 
+      sending = (packet_union_t){0};
+      pack(&sending.packet, TYPE_ACK, 0, 0, 0);
+      send_packet(client->network, sending);
+
       break;
     }
     case SENDING:
@@ -215,7 +224,7 @@ int main(int argc, char *argv[])
         pack(&sending.packet, TYPE_LIST, 0, 0, 0);
         send_packet(client->network, sending);
 
-        if (!listen_socket(current, client->network))
+        if (!listen_packet(current, client->network))
         {
           printf("TIMEOUT\n");
           continue;

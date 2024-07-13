@@ -42,7 +42,7 @@ int create_socket(char *interface_label)
 }
 
 // Listen to a socket, if a packet is received, it is copied to the output packet
-int listen_socket(packet_t *current, network_state_t *network)
+int listen_packet(packet_t *current, network_state_t *network)
 {
   uint8_t buffer[sizeof(packet_union_t)] = {0};
   ssize_t bytes_received = recv(network->socket, buffer, sizeof(packet_union_t), 0);
@@ -82,7 +82,7 @@ int listen_socket(packet_t *current, network_state_t *network)
 // Send a packet to a socket
 void send_packet(network_state_t *network, packet_union_t pu)
 {
-  ssize_t bytes_sent = sendto(network->socket, pu.raw_data, sizeof(pu.raw_data), 0, (struct sockaddr *)&network->address, sizeof(network->address));
+  ssize_t bytes_sent = send(network->socket, pu.raw_data, sizeof(pu.raw_data), 0);
 
   if (bytes_sent < 0)
   {

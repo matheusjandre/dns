@@ -4,6 +4,9 @@
 
 #include <dirent.h>
 
+#define INITIAL_SERVER_NETWORK_STATE RECEIVING
+#define INITIAL_SERVER_SUBSTATE IDLE
+#define SERVER_TRY 3
 typedef enum
 {
   IDLE = 0,
@@ -28,8 +31,9 @@ typedef struct
   network_state_t *network;
   catalog_t *catalog;
   server_state_e substate;
-  int test;
 } server_t;
+
+char interface_label[32];
 
 int filter(const struct dirent *name)
 {
@@ -85,7 +89,7 @@ catalog_t *scan_movies(char *path)
   return catalog;
 }
 
-void start_server(server_t **server, char *interface_label)
+void start_server(server_t **server)
 {
   *server = (server_t *)malloc(sizeof(server_t));
 
@@ -105,26 +109,15 @@ void start_server(server_t **server, char *interface_label)
   }
 
   (*server)->network->last_packet = NULL;
-  (*server)->network->state = RECEIVING;
+  (*server)->network->state = INITIAL_SERVER_NETWORK_STATE;
 
   (*server)->network->socket = create_socket(interface_label);
-
-  uint8_t dest_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-  memset(&((*server)->network->address), 0, sizeof((*server)->network->address));
-  (*server)->network->address.sll_family = AF_PACKET;
-  (*server)->network->address.sll_protocol = htons(ETH_P_ALL);
-  (*server)->network->address.sll_ifindex = if_nametoindex(interface_label);
-  (*server)->network->address.sll_halen = ETH_ALEN;
-  memcpy((*server)->network->address.sll_addr, dest_mac, ETH_ALEN);
 
   // Scan movies
   (*server)->catalog = scan_movies("./base");
 
   // Start server state
-  (*server)->substate = IDLE;
-
-  (*server)->test = 5;
+  (*server)->substate = INITIAL_SERVER_SUBSTATE;
 }
 
 void stop_server(server_t **server)
@@ -144,6 +137,13 @@ void stop_server(server_t **server)
   free((*server));
 }
 
+void reset_server(server_t **server)
+{
+  printf("Resetting server\n");
+  stop_server(server);
+  start_server(server);
+}
+
 int main(int argc, char *argv[])
 {
   int running = 1;
@@ -157,7 +157,8 @@ int main(int argc, char *argv[])
     return -1;
   }
 
-  start_server(&server, argv[1]);
+  memcpy(interface_label, argv[1], strlen(argv[1]));
+  start_server(&server);
 
   printf("Server started\n");
 
@@ -168,7 +169,7 @@ int main(int argc, char *argv[])
     case RECEIVING:
     {
       // If nothing is received, continue
-      if (!listen_socket(current, server->network))
+      if (!listen_packet(current, server->network))
         continue;
 
       // If the packet is the same as the last one, continue
@@ -221,22 +222,50 @@ int main(int argc, char *argv[])
       {
       case LISTING:
       {
-        free(server->network->last_packet);
-        server->network->last_packet = NULL;
-
-        for (int i = 0; i < server->catalog->amount; i++)
+        // Reset last packet
+        if (server->network->last_packet)
         {
-          printf("Sending movie: %s\n", server->catalog->movies[i].selection);
-          // sending = (packet_union_t){0};
-          // pack(&sending.packet, TYPE_SHOW, 0, server->catalog->movies[i].selection, strlen(server->catalog->movies[i].selection));
-          // send_packet(server, sending);
+          free(server->network->last_packet);
+          server->network->last_packet = NULL;
         }
 
-        // sending = (packet_union_t){0};
-        // pack(&sending.packet, TYPE_END_TX, 0, NULL, 0);
-        // send_packet(server, sending);
+        int i = 0;
+        int try = 0;
 
-        server->network->state = RECEIVING;
+        do
+        {
+          if (try == SERVER_TRY)
+            break;
+
+          // Send movie selection
+          printf("[%d] Sending movie: %s\n", i, server->catalog->movies[i].selection);
+          sending = (packet_union_t){0};
+          pack(&sending.packet, TYPE_SHOW, i, server->catalog->movies[i].selection, strlen(server->catalog->movies[i].selection));
+          send_packet(server->network, sending);
+
+          // Wait for ACK
+          if (!listen_packet(current, server->network))
+          {
+            try++;
+            continue;
+          }
+
+          if (current->type != TYPE_ACK)
+            continue;
+
+          i++;
+          try = 0;
+
+          if (i == server->catalog->amount)
+          {
+            sending = (packet_union_t){0};
+            pack(&sending.packet, TYPE_END_TX, 0, NULL, 0);
+            send_packet(server->network, sending);
+          }
+
+        } while (i < server->catalog->amount);
+
+        reset_server(&server);
         break;
       }
       case IDLE:
