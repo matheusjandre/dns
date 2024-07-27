@@ -73,6 +73,8 @@ int listen_packet(packet_t *current, network_state_t *network)
     return 0;
   }
 
+  // Check CRC
+
   memcpy(current, &packet_union->packet, sizeof(packet_t));
   free(packet_union);
 

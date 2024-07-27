@@ -10,13 +10,13 @@
 typedef enum
 {
   IDLE = 0,
-  LISTING = 1,
+  LISTING,
+  TRANSACTION
 } server_state_e;
 
 typedef struct
 {
-  unsigned int id;
-  char selection[63];
+  char label[63];
   char path[257];
 } movie_t;
 
@@ -73,16 +73,12 @@ catalog_t *scan_movies(char *path)
 
   for (int i = 0; i < n; i++)
   {
-    catalog->movies[i].id = i + 1;
     sprintf(catalog->movies[i].path, "%s/%s", path, list[i]->d_name);
-    char selection[340];
 
     if (strstr(list[i]->d_name, ".mov") || strstr(list[i]->d_name, ".mp4"))
       list[i]->d_name[strlen(list[i]->d_name) - 4] = '\0';
 
-    sprintf(selection, "%d) %s", catalog->movies[i].id, list[i]->d_name);
-
-    strcpy(catalog->movies[i].selection, selection);
+    strcpy(catalog->movies[i].label, list[i]->d_name);
     free(list[i]);
   }
 
@@ -191,8 +187,14 @@ int main(int argc, char *argv[])
       }
       case TYPE_DOWNLOAD:
       {
-        printf("Downloading movie\n");
-        break;
+        printf("Downloading movie: %s\n", current->data);
+        server->network->state = SENDING;
+        server->substate = TRANSACTION;
+
+        sending = (packet_union_t){0};
+        pack(&sending.packet, TYPE_ACK, 0, NULL, 0);
+        send_packet(server->network, sending);
+        continue;
       }
       default:
       {
@@ -238,9 +240,9 @@ int main(int argc, char *argv[])
             break;
 
           // Send movie selection
-          printf("[%d] Sending movie: %s\n", i, server->catalog->movies[i].selection);
+          printf("[%d] Sending movie: %s\n", i, server->catalog->movies[i].label);
           sending = (packet_union_t){0};
-          pack(&sending.packet, TYPE_SHOW, i, server->catalog->movies[i].selection, strlen(server->catalog->movies[i].selection));
+          pack(&sending.packet, TYPE_SHOW, i, server->catalog->movies[i].label, strlen(server->catalog->movies[i].label));
           send_packet(server->network, sending);
 
           // Wait for ACK
@@ -266,6 +268,124 @@ int main(int argc, char *argv[])
         } while (i < server->catalog->amount);
 
         reset_server(&server);
+        break;
+      }
+      case TRANSACTION:
+      {
+        printf("Sending movie data\n");
+
+        char path[257] = "";
+
+        for (int i = 0; i < server->catalog->amount; i++)
+        {
+          if (strcmp(server->catalog->movies[i].label, (char *)current->data) == 0)
+          {
+            strcpy(path, server->catalog->movies[i].path);
+            break;
+          }
+        }
+
+        if (strcmp(path, "") == 0)
+        {
+          // TODO: send error 11111
+          perror("Movie not found.");
+        }
+
+        printf("Sending movie: %s\n", path);
+
+        FILE *file = fopen(path, "rb");
+
+        if (!file)
+        {
+          perror("fopen");
+          exit(EXIT_FAILURE);
+        }
+
+        printf("File opened\n");
+
+        // get file size in  bytes
+        fseek(file, 0, SEEK_END);
+        long size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+
+        printf("File size: %ld\n", size);
+
+        sending = (packet_union_t){0};
+        pack(&sending.packet, TYPE_FILE_DESCRIPTOR, 0, &size, sizeof(long));
+        send_packet(server->network, sending);
+
+        // wait for ack
+        if (!listen_packet(current, server->network))
+          continue;
+
+        if (current->type != TYPE_ACK)
+          continue;
+
+        long total_packets = size / DATA_SIZE;
+
+        packet_union_t buffer[5] = {0};
+
+        int i = 0;
+        int try = 0;
+
+        do
+        {
+          if (try == SERVER_TRY)
+            break;
+
+          // packet 1
+          buffer[0] = (packet_union_t){0};
+          pack(&buffer[0].packet, TYPE_DATA, i, NULL, 0);
+          fread(buffer[0].packet.data, 1, DATA_SIZE, file);
+          // packet 2
+          buffer[1] = (packet_union_t){0};
+          pack(&buffer[1].packet, TYPE_DATA, i + 1, NULL, 0);
+          fread(buffer[1].packet.data, 1, DATA_SIZE, file);
+          // packet 3
+          buffer[2] = (packet_union_t){0};
+          pack(&buffer[2].packet, TYPE_DATA, i + 2, NULL, 0);
+          fread(buffer[2].packet.data, 1, DATA_SIZE, file);
+          // packet 4
+          buffer[4] = (packet_union_t){0};
+          pack(&buffer[4].packet, TYPE_DATA, i + 3, NULL, 0);
+          fread(buffer[4].packet.data, 1, DATA_SIZE, file);
+          // packet 5
+          buffer[5] = (packet_union_t){0};
+          pack(&buffer[5].packet, TYPE_DATA, i + 4, NULL, 0);
+          fread(buffer[5].packet.data, 1, DATA_SIZE, file);
+
+          // something
+
+          // nack = i  + current_sequence
+          // ack = i + 5
+
+          i += 5;
+
+          printf("Sending data\n");
+          sleep(3);
+        } while (1);
+
+        // fseek(file, 0, SEEK_END);
+        // long size = ftell(file);
+        // fseek(file, 0, SEEK_SET);
+
+        // char *buffer = (char *)malloc(size);
+
+        // if (!buffer)
+        // {
+        //   perror("buffer malloc failed.");
+        //   exit(EXIT_FAILURE);
+        // }
+
+        // fread(buffer, 1, size, file);
+        // fclose(file);
+
+        // sending = (packet_union_t){0};
+        // pack(&sending.packet, TYPE_DATA, 0, buffer, size);
+        // send_packet(server->network, sending);
+
+        // free(buffer);
+        // reset_server(&server);
         break;
       }
       case IDLE:

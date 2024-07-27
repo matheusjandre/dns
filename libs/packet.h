@@ -8,13 +8,15 @@
 #include <stdint.h>
 #include "./protocol.h"
 
+#define DATA_SIZE 63
+
 typedef struct
 {
   uint8_t start_marker : 8; // 8 bits
   uint8_t size : 6;         // 6 bits
   uint8_t sequence : 5;     // 5 bits
   uint8_t type : 5;         // 5 bits
-  uint8_t data[63];         // 63 bytes
+  uint8_t data[DATA_SIZE];  // 63 bytes
   uint8_t crc : 8;          // 8 bits
 } packet_t;
 
