@@ -284,6 +284,7 @@ int main(int argc, char *argv[])
 
           if (i == server->catalog->amount)
           {
+            printf("Sending end tx\n");
             send_packet_helper(server->network, TYPE_END_TX, 0, NULL, 0, 0);
           }
 
@@ -354,7 +355,6 @@ int main(int argc, char *argv[])
         // Send file in chunks
 
         int8_t last_pkg_seq = -1;
-        uint last_ack_index = 0;
         long total_packets_sent = 0;
 
         do
@@ -408,7 +408,7 @@ int main(int argc, char *argv[])
 
           // After sending (5 - last_ack_index) packets, we need to wait for an ack
           // if we receive an ack, we need to update the window
-          // if we receive a nack, we need to resend the widow
+          // if we receive a nack, we need to resend the window
 
           // wait for ack
           if (!listen_packet(current, server->network, 0))
@@ -421,7 +421,7 @@ int main(int argc, char *argv[])
             printf("Recebendo ack cur: %d\n", current->sequence);
 
             // Search on the buffer for the pck with current_sequence
-            for (int x = 0; x < 4; x++)
+            for (int x = 0; x < 5; x++)
             {
               if (server->window[x]->window_buffer->sequence <= current->sequence)
               {
@@ -431,14 +431,33 @@ int main(int argc, char *argv[])
             }
 
             total_packets_sent++;
-          } 
+          }
+
+          if (current->type == TYPE_NACK)
+          {
+            for (int x = 0; x < 5; x++)
+            {
+              if (server->window[x]->window_buffer->sequence <= current->sequence)
+              {
+                printf("Limpando buffer de seq: %d\n", server->window[x]->window_buffer->sequence);
+                server->window[x]->to_clear = 1;
+              }
+              else
+              {
+                printf("Reenviando buffer de seq: %d\n", server->window[x]->window_buffer->sequence);
+                server->window[x]->sent = 0;
+              }
+            }
+          }
 
           printf("falta: %d\n", total_packets - total_packets_sent);
 
         } while (total_packets_sent < total_packets);
 
-        printf("AAAAAAAAAAAAAAAAAAAAA");
-        exit(1);
+        // Send end tx
+        printf("Download finished\n");
+        send_packet_helper(server->network, TYPE_END_TX, 0, NULL, 0, 0);
+        reset_server(&server);
 
         break;
       }

@@ -240,6 +240,8 @@ int main(int argc, char *argv[])
       if (!listen_packet(current, client->network, 1))
         continue;
 
+      printf("Recebido pacote %d\n", current->sequence);
+
       // this second time is to avoid loopback sending the same packet
 
       switch (client->substate)
@@ -352,14 +354,6 @@ int main(int argc, char *argv[])
           // Send ACK
           printf("Enviando ACK para pacote %d\n", current->sequence);
           send_packet_helper(client->network, TYPE_ACK, current->sequence, 0, 0, 1);
-
-          // If the packet is the last one, reset client
-          if (current->type == TYPE_END_TX)
-          {
-            printf("Download concluído\n");
-            reset_client(&client);
-            break;
-          }
 
           // Update last packet sequence
           client->buffer->last_packet_sequence = current->sequence;
