@@ -34,10 +34,17 @@ typedef struct
   int dirty;
 } client_movie_cache_t;
 
+// Struct represents janela deslizante ;D
 typedef struct
 {
-  uint8_t buffer[BUFFER_SIZE];
-  size_t size;
+  // Array of 5 packets
+  packet_t *packets[5];
+  uint8_t index;
+  uint8_t last_packet_sequence;
+
+  // filename
+  char filename[63];
+
 } client_pkg_buffer;
 
 typedef struct
@@ -97,6 +104,24 @@ int get_selection_option()
   return option;
 }
 
+void send_packet_helper(network_state_t *network, uint8_t type, uint8_t sequence, void *data, uint8_t size, uint8_t from)
+{
+  packet_union_t sending = (packet_union_t){0};
+
+  pack(&sending.packet, type, sequence, data, size, from);
+  send_packet(network, sending);
+
+  if (network->last_packet)
+  {
+    free(network->last_packet);
+  }
+
+  network->last_packet = (packet_t *)malloc(sizeof(packet_t));
+  memcpy(network->last_packet, &sending.packet, sizeof(packet_t));
+
+  return;
+}
+
 void start_client(client_t **client)
 {
   (*client) = (client_t *)malloc(sizeof(client_t));
@@ -142,11 +167,17 @@ void start_client(client_t **client)
     exit(EXIT_FAILURE);
   }
 
+  (*client)->buffer->index = 0;
+  for (int i = 0; i < 5; i++)
+  {
+    (*client)->buffer->packets[i] = (packet_t *)malloc(sizeof(packet_t));
+  }
+
+  (*client)->buffer->last_packet_sequence = -1;
+
   (*client)->movie_cache->dirty = 0;
   (*client)->movie_cache->amount = 0;
   (*client)->movie_cache->movies = NULL;
-
-  (*client)->buffer->size = 0;
 
   (*client)->network->socket = create_socket(interface_label);
   (*client)->network->state = INITIAL_CLIENT_NETWORK_STATE;
@@ -183,7 +214,6 @@ int main(int argc, char *argv[])
 {
   int running = 1;
   client_t *client = NULL;
-  packet_union_t sending = {0};
   packet_t *current = (packet_t *)malloc(sizeof(packet_t));
 
   if (argc != 2)
@@ -204,24 +234,25 @@ int main(int argc, char *argv[])
     case RECEIVING:
     {
       // If nothing is received, continue
-      if (!listen_packet(current, client->network))
-      {
+      if (!listen_packet(current, client->network, 1))
         continue;
-      }
+
+      if (!listen_packet(current, client->network, 1))
+        continue;
+
+      // this second time is to avoid loopback sending the same packet
 
       switch (client->substate)
       {
       case LISTING:
       {
         // If the packet is the same as the last one, send an ACK and continue
-        if (client->network->last_packet && client->network->last_packet->sequence == current->sequence)
-        {
-          printf("Reenviando ACK\n");
-          sending = (packet_union_t){0};
-          pack(&sending.packet, TYPE_ACK, 0, 0, 0);
-          send_packet(client->network, sending);
-          continue;
-        }
+        // if (client->network->last_packet && client->network->last_packet->sequence == current->sequence)
+        // {
+        //   printf("Reenviando ACK\n");
+        //   send_packet_helper(client->network, TYPE_ACK, current->sequence, 0, 0, 1);
+        //   continue;
+        // }
 
         if (current->type == TYPE_SHOW)
         {
@@ -270,9 +301,7 @@ int main(int argc, char *argv[])
           continue;
         }
 
-        sending = (packet_union_t){0};
-        pack(&sending.packet, TYPE_ACK, 0, 0, 0);
-        send_packet(client->network, sending);
+        send_packet_helper(client->network, TYPE_ACK, client->movie_cache->amount, 0, 0, 1);
 
         break;
       }
@@ -280,26 +309,63 @@ int main(int argc, char *argv[])
       {
         if (current->type == TYPE_DATA)
         {
-          // Write to file
-          int fd = open(client->movie_cache->movies[0].selection, O_CREAT | O_WRONLY, 0644);
 
-          if (fd == -1)
+          if (client->buffer->last_packet_sequence + 1 == 32)
           {
-            perror("open");
-            exit(EXIT_FAILURE);
+            // Max size reached, return to -1
+            client->buffer->last_packet_sequence = -1;
           }
 
-          write(fd, current->data, current->size);
+          // First, check if the sequence is the next one
+          if (current->sequence != client->buffer->last_packet_sequence + 1)
+          {
+            // Ifs not the next one, send a NACK from where it should be
+            send_packet_helper(client->network, TYPE_NACK, client->buffer->last_packet_sequence + 1, 0, 0, 1);
+            continue;
+          }
 
-          close(fd);
+          // If it is the next one, save it on the buffer
 
-          sending = (packet_union_t){0};
-          pack(&sending.packet, TYPE_ACK, 0, 0, 0);
-          send_packet(client->network, sending);
+          // Write to file, this is wrong, im dumb
+          char *path = "./download";
+          // Construct the full path
+          snprintf(path, sizeof(path), "./download/%s", client->buffer->filename);
+
+          FILE *file = fopen(path, "a");
+
+          if (file == NULL)
+          {
+            fprintf(stderr, "Erro ao abrir arquivo\n");
+            return -1;
+          }
+
+          fwrite(current->data, 1, current->size, file);
+          fclose(file);
+
+          // Send ACK
+          send_packet_helper(client->network, TYPE_ACK, current->sequence, 0, 0, 1);
+
+          // If the packet is the last one, reset client
+          if (current->type == TYPE_END_TX)
+          {
+            printf("Download concluído\n");
+            reset_client(&client);
+            break;
+          }
+
+          // Update last packet sequence
+          client->buffer->last_packet_sequence = current->sequence;
 
           continue;
         }
 
+        // If tx is over, reset client
+        if (current->type == TYPE_END_TX)
+        {
+          printf("Download concluído\n");
+          reset_client(&client);
+          break;
+        }
 
         break;
       }
@@ -325,11 +391,9 @@ int main(int argc, char *argv[])
         {
         case LIST:
         {
-          sending = (packet_union_t){0};
-          pack(&sending.packet, TYPE_LIST, 0, 0, 0);
-          send_packet(client->network, sending);
+          send_packet_helper(client->network, TYPE_LIST, 0, 0, 0, 1);
 
-          if (!listen_packet(current, client->network))
+          if (!listen_packet(current, client->network, 1))
             continue;
 
           if (current->type == TYPE_ACK)
@@ -375,24 +439,26 @@ int main(int argc, char *argv[])
 
         printf("Filme selecionado!: %s\n", label);
 
-        sending = (packet_union_t){0};
-        pack(&sending.packet, TYPE_DOWNLOAD, 0, label, strlen(label));
+        send_packet_helper(client->network, TYPE_DOWNLOAD, 0, label, strlen(label), 1);
 
-        send_packet(client->network, sending);
+        if (!listen_packet(current, client->network, 1))
+          continue;
 
-        if (!listen_packet(current, client->network))
+        if (!listen_packet(current, client->network, 1)) // Loopback
           continue;
 
         if (current->type == TYPE_ACK)
         {
           printf("Filme selecionado com sucesso\n");
-          reset_client(&client);
 
           // Set cache dirty
           client->movie_cache->dirty = 1;
 
           // Setup for transaction
-          if (!listen_packet(current, client->network))
+          if (!listen_packet(current, client->network, 1))
+            continue;
+
+          if (!listen_packet(current, client->network, 1)) // Loopback
             continue;
 
           if (current->type == TYPE_FILE_DESCRIPTOR)
@@ -420,9 +486,7 @@ int main(int argc, char *argv[])
                 reset_client(&client);
 
                 // Send error
-                sending = (packet_union_t){0};
-                pack(&sending.packet, TYPE_ERROR, 0, ERROR_DISK_FULL, 0);
-                send_packet(client->network, sending);
+                send_packet_helper(client->network, ERROR_DISK_FULL, 0, 0, 0, 1);
 
                 continue;
               }
@@ -430,10 +494,11 @@ int main(int argc, char *argv[])
               client->network->state = RECEIVING;
               client->substate = TRANSACTION;
 
-              sending = (packet_union_t){0};
-              pack(&sending.packet, TYPE_ACK, 0, label, strlen(label));
+              // Copy label to buffer filename
+              strcpy(client->buffer->filename, label);
 
-              send_packet(client->network, sending);
+              // Send ack
+              send_packet_helper(client->network, TYPE_ACK, 0, 0, 0, 1);
 
               printf("Iniciando transação\n");
               continue;

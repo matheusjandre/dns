@@ -41,7 +41,7 @@ typedef struct
 int create_socket(char *interface_label);
 
 // Listen to a socket
-int listen_packet(packet_t *current, network_state_t *network);
+int listen_packet(packet_t *current, network_state_t *network, uint8_t from);
 
 // Send a packet
 void send_packet(network_state_t *network, packet_union_t pu);

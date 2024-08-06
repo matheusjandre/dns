@@ -12,13 +12,14 @@ uint8_t compute_crc8(const uint8_t *data, size_t length)
 }
 
 // Pack data into a packet
-void pack(packet_t *packet, uint8_t type, uint8_t sequence, void *data, uint8_t size)
+void pack(packet_t *packet, uint8_t type, uint8_t sequence, void *data, uint8_t size, uint8_t from)
 {
   packet->start_marker = START_MARKER;
 
   packet->size = size;
   packet->type = type;
   packet->sequence = sequence;
+  packet->from = from;
 
   memcpy(packet->data, data, size);
 

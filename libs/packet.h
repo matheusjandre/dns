@@ -14,10 +14,11 @@ typedef struct
 {
   uint8_t start_marker : 8; // 8 bits
   uint8_t size : 6;         // 6 bits
-  uint8_t sequence : 5;     // 5 bits
+  uint8_t sequence : 5;     // 5 bits // 32 is max
   uint8_t type : 5;         // 5 bits
   uint8_t data[DATA_SIZE];  // 63 bytes
   uint8_t crc : 8;          // 8 bits
+  uint8_t from : 8;         // 8 bits 0 - server, 1 - client
 } packet_t;
 
 typedef union
@@ -33,7 +34,7 @@ typedef struct packet_node
 } packet_node_t;
 
 // Pack data into a packet
-void pack(packet_t *packet, uint8_t type, uint8_t sequence, void *data, uint8_t size);
+void pack(packet_t *packet, uint8_t type, uint8_t sequence, void *data, uint8_t size, uint8_t from);
 
 // Example function to compute CRC-8 (this is just a placeholder; use a proper implementation)
 uint8_t compute_crc8(const uint8_t *data, size_t length);

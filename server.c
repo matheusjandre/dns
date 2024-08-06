@@ -31,6 +31,7 @@ typedef struct
   network_state_t *network;
   catalog_t *catalog;
   server_state_e substate;
+  packet_t *window_buffer[5];
 } server_t;
 
 char interface_label[32];
@@ -83,6 +84,24 @@ catalog_t *scan_movies(char *path)
   }
 
   return catalog;
+}
+
+void send_packet_helper(network_state_t *network, uint8_t type, uint8_t sequence, void *data, uint8_t size, uint8_t from)
+{
+  packet_union_t sending = (packet_union_t){0};
+
+  pack(&sending.packet, type, sequence, data, size, from);
+  send_packet(network, sending);
+
+  if (network->last_packet)
+  {
+    free(network->last_packet);
+  }
+
+  network->last_packet = (packet_t *)malloc(sizeof(packet_t));
+  memcpy(network->last_packet, &sending.packet, sizeof(packet_t));
+
+  return;
 }
 
 void start_server(server_t **server)
@@ -144,7 +163,6 @@ int main(int argc, char *argv[])
 {
   int running = 1;
   server_t *server = NULL;
-  packet_union_t sending = {0};
   packet_t *current = (packet_t *)malloc(sizeof(packet_t));
 
   if (argc != 2)
@@ -164,12 +182,8 @@ int main(int argc, char *argv[])
     {
     case RECEIVING:
     {
-      // If nothing is received, continue
-      if (!listen_packet(current, server->network))
-        continue;
-
-      // If the packet is the same as the last one, continue
-      if (server->network->last_packet && server->network->last_packet->sequence == current->sequence)
+      // Receive packet
+      if (!listen_packet(current, server->network, 0))
         continue;
 
       switch (current->type)
@@ -177,9 +191,8 @@ int main(int argc, char *argv[])
       case TYPE_LIST:
       {
         printf("Listing movies\n");
-        sending = (packet_union_t){0};
-        pack(&sending.packet, TYPE_ACK, 0, NULL, 0);
-        send_packet(server->network, sending);
+
+        send_packet_helper(server->network, TYPE_ACK, 0, NULL, 0, 0);
 
         server->substate = LISTING;
         server->network->state = SENDING;
@@ -191,29 +204,16 @@ int main(int argc, char *argv[])
         server->network->state = SENDING;
         server->substate = TRANSACTION;
 
-        sending = (packet_union_t){0};
-        pack(&sending.packet, TYPE_ACK, 0, NULL, 0);
-        send_packet(server->network, sending);
+        send_packet_helper(server->network, TYPE_ACK, 0, NULL, 0, 0);
         continue;
       }
       default:
       {
         printf("Sending ERROR\n");
-        sending = (packet_union_t){0};
-        pack(&sending.packet, TYPE_ERROR, 0, NULL, 0);
-        send_packet(server->network, sending);
+        send_packet_helper(server->network, TYPE_ERROR, 0, NULL, 0, 0);
         break;
       }
       }
-
-      if (server->network->last_packet)
-      {
-        free(server->network->last_packet);
-        server->network->last_packet = NULL;
-      }
-
-      server->network->last_packet = (packet_t *)malloc(sizeof(packet_t));
-      memcpy(server->network->last_packet, current, sizeof(packet_t));
 
       break;
     }
@@ -224,6 +224,13 @@ int main(int argc, char *argv[])
       {
       case LISTING:
       {
+        // For some reason with are receiving a TYPE_LIST packet here
+        if (!listen_packet(current, server->network, 0))
+          continue;
+
+        if (current->type != TYPE_ACK)
+          reset_server(&server);
+
         // Reset last packet
         if (server->network->last_packet)
         {
@@ -240,29 +247,28 @@ int main(int argc, char *argv[])
             break;
 
           // Send movie selection
-          printf("[%d] Sending movie: %s\n", i, server->catalog->movies[i].label);
-          sending = (packet_union_t){0};
-          pack(&sending.packet, TYPE_SHOW, i, server->catalog->movies[i].label, strlen(server->catalog->movies[i].label));
-          send_packet(server->network, sending);
+          printf("[%d] Trying to send movie: %s\n", i, server->catalog->movies[i].label);
+          send_packet_helper(server->network, TYPE_SHOW, i, server->catalog->movies[i].label, strlen(server->catalog->movies[i].label), 0);
 
           // Wait for ACK
-          if (!listen_packet(current, server->network))
+          if (!listen_packet(current, server->network, 0))
           {
             try++;
             continue;
           }
 
           if (current->type != TYPE_ACK)
+          {
+            printf("Failed no ack! type: %d\n", current->type);
             continue;
+          }
 
           i++;
           try = 0;
 
           if (i == server->catalog->amount)
           {
-            sending = (packet_union_t){0};
-            pack(&sending.packet, TYPE_END_TX, 0, NULL, 0);
-            send_packet(server->network, sending);
+            send_packet_helper(server->network, TYPE_END_TX, 0, NULL, 0, 0);
           }
 
         } while (i < server->catalog->amount);
@@ -273,7 +279,6 @@ int main(int argc, char *argv[])
       case TRANSACTION:
       {
         printf("Sending movie data\n");
-
         char path[257] = "";
 
         for (int i = 0; i < server->catalog->amount; i++)
@@ -308,14 +313,13 @@ int main(int argc, char *argv[])
         long size = ftell(file);
         fseek(file, 0, SEEK_SET);
 
-        printf("File size: %ld\n", size);
+        // Print file size in bytes
+        printf("File size: %ld bytes\n", size);
 
-        sending = (packet_union_t){0};
-        pack(&sending.packet, TYPE_FILE_DESCRIPTOR, 0, &size, sizeof(long));
-        send_packet(server->network, sending);
+        send_packet_helper(server->network, TYPE_FILE_DESCRIPTOR, 0, &size, sizeof(long), 0);
 
         // wait for ack
-        if (!listen_packet(current, server->network))
+        if (!listen_packet(current, server->network, 0))
           continue;
 
         if (current->type != TYPE_ACK)
@@ -323,69 +327,65 @@ int main(int argc, char *argv[])
 
         long total_packets = size / DATA_SIZE;
 
-        packet_union_t buffer[5] = {0};
+        // 1. We have 63 bytes of data to send in each packet, so we need to send the file in chunks
+        // 2. We need to send the file in chunks of 63 bytes
+        // 3. We will have 5 packets of 63 bytes of floating windows
 
-        int i = 0;
-        int try = 0;
+        if (size % DATA_SIZE != 0)
+          total_packets++;
 
-        do
+        printf("Total packets: %ld\n", total_packets);
+        // Send file in chunks
+        uint8_t last_pkg_seq = 0;
+
+        for (int i = 0; i < total_packets;)
         {
-          if (try == SERVER_TRY)
-            break;
+          // Build chunks of
+          for (int j = 0; j < 5; j++)
+          {
+            // Read file
+            uint8_t data[DATA_SIZE] = {0};
+            size_t read = fread(data, 1, DATA_SIZE, file);
 
-          // packet 1
-          buffer[0] = (packet_union_t){0};
-          pack(&buffer[0].packet, TYPE_DATA, i, NULL, 0);
-          fread(buffer[0].packet.data, 1, DATA_SIZE, file);
-          // packet 2
-          buffer[1] = (packet_union_t){0};
-          pack(&buffer[1].packet, TYPE_DATA, i + 1, NULL, 0);
-          fread(buffer[1].packet.data, 1, DATA_SIZE, file);
-          // packet 3
-          buffer[2] = (packet_union_t){0};
-          pack(&buffer[2].packet, TYPE_DATA, i + 2, NULL, 0);
-          fread(buffer[2].packet.data, 1, DATA_SIZE, file);
-          // packet 4
-          buffer[4] = (packet_union_t){0};
-          pack(&buffer[4].packet, TYPE_DATA, i + 3, NULL, 0);
-          fread(buffer[4].packet.data, 1, DATA_SIZE, file);
-          // packet 5
-          buffer[5] = (packet_union_t){0};
-          pack(&buffer[5].packet, TYPE_DATA, i + 4, NULL, 0);
-          fread(buffer[5].packet.data, 1, DATA_SIZE, file);
+            if (read == 0)
+            {
+              printf("End of file???\n");
+              break;
+            }
 
-          // something
+            // Create packet
+            if ((server->window_buffer[j]))
+            {
+              free(server->window_buffer[j]);
+            }
+            server->window_buffer[j] = (packet_t *)malloc(sizeof(packet_t));
 
-          // nack = i  + current_sequence
-          // ack = i + 5
+            server->window_buffer[j]->type = TYPE_DATA;
+            server->window_buffer[j]->sequence = last_pkg_seq;
+            server->window_buffer[j]->size = read;
 
-          i += 5;
+            // We dont need to copy the data, we just need the sequence number
 
-          printf("Sending data\n");
-          sleep(3);
-        } while (1);
+            // Send packet
+            send_packet_helper(server->network, TYPE_DATA, last_pkg_seq, data, read, 0);
+          }
 
-        // fseek(file, 0, SEEK_END);
-        // long size = ftell(file);
-        // fseek(file, 0, SEEK_SET);
+          // Wait for ack
+          if (!listen_packet(current, server->network, 0))
+            continue;
+          if (!listen_packet(current, server->network, 0))  // Fucking loopback
+            continue; 
 
-        // char *buffer = (char *)malloc(size);
+          // Check for ack
+          if(current->type == TYPE_ACK ){
+            // Check sequence
+            // Lets try it tomorrow, check if send & wait or voltan
+          }
+            
+        }
 
-        // if (!buffer)
-        // {
-        //   perror("buffer malloc failed.");
-        //   exit(EXIT_FAILURE);
-        // }
+        exit(1);
 
-        // fread(buffer, 1, size, file);
-        // fclose(file);
-
-        // sending = (packet_union_t){0};
-        // pack(&sending.packet, TYPE_DATA, 0, buffer, size);
-        // send_packet(server->network, sending);
-
-        // free(buffer);
-        // reset_server(&server);
         break;
       }
       case IDLE:

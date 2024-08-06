@@ -1,6 +1,7 @@
 {
   "C_Cpp.default.cStandard": "gnu99",
   "files.associations": {
+    "*.ejs": "html",
     "ethernet.h": "c",
     "inet.h": "c",
     "rawsocket.h": "c",
@@ -16,6 +17,7 @@
     "errno.h": "c",
     "protocol.h": "c",
     "typeinfo": "c",
-    "ioctl.h": "c"
+    "ioctl.h": "c",
+    "cstdint": "c"
   }
 }

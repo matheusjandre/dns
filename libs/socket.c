@@ -42,7 +42,7 @@ int create_socket(char *interface_label)
 }
 
 // Listen to a socket, if a packet is received, it is copied to the output packet
-int listen_packet(packet_t *current, network_state_t *network)
+int listen_packet(packet_t *current, network_state_t *network, uint8_t from)
 {
   uint8_t buffer[sizeof(packet_union_t)] = {0};
   ssize_t bytes_received = recv(network->socket, buffer, sizeof(packet_union_t), 0);
@@ -71,6 +71,15 @@ int listen_packet(packet_t *current, network_state_t *network)
   {
     free(packet_union);
     return 0;
+  }
+
+  // Check if the packet is the same as the current
+  if(packet_union->packet.from == from)
+  {
+    free(packet_union);
+
+    // Return recursive call to listen_packet, FUCK LOOPBACK JESUS CHRIST
+    return listen_packet(current, network, from);
   }
 
   // Check CRC
