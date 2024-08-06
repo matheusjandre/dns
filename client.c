@@ -31,7 +31,7 @@ typedef struct
 {
   int amount;
   movie_t *movies;
-  int dirty;
+  int to_clear;
 } client_movie_cache_t;
 
 // Struct represents janela deslizante ;D
@@ -40,7 +40,7 @@ typedef struct
   // Array of 5 packets
   packet_t *packets[5];
   uint8_t index;
-  uint8_t last_packet_sequence;
+  int8_t last_packet_sequence;
 
   // filename
   char filename[63];
@@ -175,7 +175,7 @@ void start_client(client_t **client)
 
   (*client)->buffer->last_packet_sequence = -1;
 
-  (*client)->movie_cache->dirty = 0;
+  (*client)->movie_cache->to_clear = 0;
   (*client)->movie_cache->amount = 0;
   (*client)->movie_cache->movies = NULL;
 
@@ -259,8 +259,8 @@ int main(int argc, char *argv[])
           printf("%d) %s\n", client->movie_cache->amount + 1, current->data);
           // Save on the cache
 
-          // If dirty clear cache
-          if (client->movie_cache->dirty)
+          // If to_clear clear cache
+          if (client->movie_cache->to_clear)
           {
             client->movie_cache->amount = 0;
             free(client->movie_cache->movies);
@@ -296,8 +296,8 @@ int main(int argc, char *argv[])
           client->network->state = SENDING;
           client->substate = SELECTING_MOVIE;
 
-          // Set cache dirty
-          client->movie_cache->dirty = 1;
+          // Set cache to_clear
+          client->movie_cache->to_clear = 1;
           continue;
         }
 
@@ -309,7 +309,8 @@ int main(int argc, char *argv[])
       {
         if (current->type == TYPE_DATA)
         {
-
+          printf("Recebido pacote %d\n", current->sequence);
+          printf("%d\n", client->buffer->last_packet_sequence);
           if (client->buffer->last_packet_sequence + 1 == 32)
           {
             // Max size reached, return to -1
@@ -317,19 +318,22 @@ int main(int argc, char *argv[])
           }
 
           // First, check if the sequence is the next one
-          if (current->sequence != client->buffer->last_packet_sequence + 1)
+          if (current->sequence != (client->buffer->last_packet_sequence + 1))
           {
             // Ifs not the next one, send a NACK from where it should be
+            printf("Pacote fora de ordem, enviando NACK para pacote %d\n", client->buffer->last_packet_sequence + 1);
             send_packet_helper(client->network, TYPE_NACK, client->buffer->last_packet_sequence + 1, 0, 0, 1);
             continue;
           }
 
-          // If it is the next one, save it on the buffer
+          printf("Pacote %d recebido com sucesso, escrevendo... %s\n", current->sequence, client->buffer->filename);
 
+  
           // Write to file, this is wrong, im dumb
-          char *path = "./download";
+          char path[256] = "./download/";
           // Construct the full path
-          snprintf(path, sizeof(path), "./download/%s", client->buffer->filename);
+          strcat(path, client->buffer->filename);
+    
 
           FILE *file = fopen(path, "a");
 
@@ -339,10 +343,14 @@ int main(int argc, char *argv[])
             return -1;
           }
 
+          printf("Escrevendo no arquivo\n");
+
           fwrite(current->data, 1, current->size, file);
+          printf("Recebido pacote %d\n", current->sequence);
           fclose(file);
 
           // Send ACK
+          printf("Enviando ACK para pacote %d\n", current->sequence);
           send_packet_helper(client->network, TYPE_ACK, current->sequence, 0, 0, 1);
 
           // If the packet is the last one, reset client
@@ -451,8 +459,8 @@ int main(int argc, char *argv[])
         {
           printf("Filme selecionado com sucesso\n");
 
-          // Set cache dirty
-          client->movie_cache->dirty = 1;
+          // Set cache to_clear
+          client->movie_cache->to_clear = 1;
 
           // Setup for transaction
           if (!listen_packet(current, client->network, 1))
@@ -499,6 +507,13 @@ int main(int argc, char *argv[])
 
               // Send ack
               send_packet_helper(client->network, TYPE_ACK, 0, 0, 0, 1);
+
+              // Delete the file if it exists
+              char path[256] = "./download/";
+              strcat(path, client->buffer->filename);
+
+              remove(path);
+
 
               printf("Iniciando transação\n");
               continue;

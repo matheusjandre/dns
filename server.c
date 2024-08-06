@@ -28,10 +28,17 @@ typedef struct
 
 typedef struct
 {
+  uint8_t sent;
+  uint8_t to_clear;
+  packet_t *window_buffer;
+} window_t;
+
+typedef struct
+{
   network_state_t *network;
   catalog_t *catalog;
   server_state_e substate;
-  packet_t *window_buffer[5];
+  window_t *window[5];
 } server_t;
 
 char interface_label[32];
@@ -133,6 +140,15 @@ void start_server(server_t **server)
 
   // Start server state
   (*server)->substate = INITIAL_SERVER_SUBSTATE;
+
+  // Start window
+  for (int i = 0; i < 5; i++)
+  {
+    (*server)->window[i] = (window_t *)malloc(sizeof(window_t));
+    (*server)->window[i]->sent = 0;
+    (*server)->window[i]->to_clear = 1;
+    (*server)->window[i]->window_buffer = NULL;
+  }
 }
 
 void stop_server(server_t **server)
@@ -336,54 +352,92 @@ int main(int argc, char *argv[])
 
         printf("Total packets: %ld\n", total_packets);
         // Send file in chunks
-        uint8_t last_pkg_seq = 0;
 
-        for (int i = 0; i < total_packets;)
+        int8_t last_pkg_seq = -1;
+        uint last_ack_index = 0;
+        long total_packets_sent = 0;
+
+        do
         {
-          // Build chunks of
+          // for last_ack_index to 5
           for (int j = 0; j < 5; j++)
           {
-            // Read file
-            uint8_t data[DATA_SIZE] = {0};
-            size_t read = fread(data, 1, DATA_SIZE, file);
-
-            if (read == 0)
+            // Create pckg to buffer
+            if (server->window[j]->to_clear == 1)
             {
-              printf("End of file???\n");
-              break;
+              // Clears
+              if (server->window[j]->window_buffer)
+                free(server->window[j]->window_buffer);
+
+              // Resets
+              last_pkg_seq++;
+              if (last_pkg_seq == 32)
+                last_pkg_seq = 0;
+
+              // Create
+              packet_t *packet = (packet_t *)malloc(sizeof(packet_t));
+              packet->type = TYPE_DATA;
+              packet->sequence = last_pkg_seq;
+              packet->from = 0;
+
+              // Read file
+              uint8_t data[DATA_SIZE] = {0};
+              size_t read = fread(data, 1, DATA_SIZE, file);
+
+              packet->size = read;
+              memcpy(packet->data, data, read);
+
+              // Update window
+              server->window[j]->window_buffer = packet;
+              server->window[j]->to_clear = 0;
+              server->window[j]->sent = 0;
             }
 
-            // Create packet
-            if ((server->window_buffer[j]))
+            // if window is not full
+            if (server->window[j]->sent == 0)
             {
-              free(server->window_buffer[j]);
+
+              // Send packet
+              printf("Sending packet: %d\n", server->window[j]->window_buffer->sequence);
+              send_packet_helper(server->network, server->window[j]->window_buffer->type, server->window[j]->window_buffer->sequence, server->window[j]->window_buffer->data, server->window[j]->window_buffer->size, 0);
+
+              // Update window
+              server->window[j]->sent = 1;
             }
-            server->window_buffer[j] = (packet_t *)malloc(sizeof(packet_t));
-
-            server->window_buffer[j]->type = TYPE_DATA;
-            server->window_buffer[j]->sequence = last_pkg_seq;
-            server->window_buffer[j]->size = read;
-
-            // We dont need to copy the data, we just need the sequence number
-
-            // Send packet
-            send_packet_helper(server->network, TYPE_DATA, last_pkg_seq, data, read, 0);
           }
 
-          // Wait for ack
+          // After sending (5 - last_ack_index) packets, we need to wait for an ack
+          // if we receive an ack, we need to update the window
+          // if we receive a nack, we need to resend the widow
+
+          // wait for ack
           if (!listen_packet(current, server->network, 0))
             continue;
-          if (!listen_packet(current, server->network, 0))  // Fucking loopback
-            continue; 
+          if (!listen_packet(current, server->network, 0)) // fuck loopback
+            continue;
 
-          // Check for ack
-          if(current->type == TYPE_ACK ){
-            // Check sequence
-            // Lets try it tomorrow, check if send & wait or voltan
-          }
-            
-        }
+          if (current->type == TYPE_ACK)
+          {
+            printf("Recebendo ack cur: %d\n", current->sequence);
 
+            // Search on the buffer for the pck with current_sequence
+            for (int x = 0; x < 4; x++)
+            {
+              if (server->window[x]->window_buffer->sequence <= current->sequence)
+              {
+                printf("Limpando buffer de seq: %d\n", server->window[x]->window_buffer->sequence);
+                server->window[x]->to_clear = 1;
+              }
+            }
+
+            total_packets_sent++;
+          } 
+
+          printf("falta: %d\n", total_packets - total_packets_sent);
+
+        } while (total_packets_sent < total_packets);
+
+        printf("AAAAAAAAAAAAAAAAAAAAA");
         exit(1);
 
         break;
