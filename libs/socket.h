@@ -37,6 +37,10 @@ typedef struct
   packet_t *last_packet;
 } network_state_t;
 
+int verify_crc8(uint8_t expected_crc, const uint8_t *data, uint8_t size);
+uint8_t compute_crc8(const uint8_t *data, size_t length);
+
+
 // Create a raw socket
 int create_socket(char *interface_label);
 

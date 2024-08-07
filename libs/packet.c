@@ -1,15 +1,6 @@
 #include "./packet.h"
+#include "./socket.h"
 
-// Example function to compute CRC-8 (this is just a placeholder; use a proper implementation)
-uint8_t compute_crc8(const uint8_t *data, size_t length)
-{
-  uint8_t crc = 0;
-  for (size_t i = 0; i < length; ++i)
-  {
-    crc ^= data[i];
-  }
-  return crc;
-}
 
 // Pack data into a packet
 void pack(packet_t *packet, uint8_t type, uint8_t sequence, void *data, uint8_t size, uint8_t from)
@@ -20,10 +11,9 @@ void pack(packet_t *packet, uint8_t type, uint8_t sequence, void *data, uint8_t 
   packet->type = type;
   packet->sequence = sequence;
   packet->from = from;
+  packet->crc = compute_crc8(data, size);
 
   memcpy(packet->data, data, size);
-
-  packet->crc = compute_crc8((uint8_t *)packet, sizeof(packet_t) - 1);
 }
 
 // Dump bits of a byte array

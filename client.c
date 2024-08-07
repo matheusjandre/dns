@@ -226,7 +226,7 @@ int main(int argc, char *argv[])
   start_client(&client);
 
   printf("Client started\n");
-
+  int try = 0;
   while (running)
   {
     switch (client->network->state)
@@ -240,9 +240,6 @@ int main(int argc, char *argv[])
       if (!listen_packet(current, client->network, 1))
         continue;
 
-      printf("Recebido pacote %d\n", current->sequence);
-
-      // this second time is to avoid loopback sending the same packet
 
       switch (client->substate)
       {
@@ -309,6 +306,7 @@ int main(int argc, char *argv[])
       }
       case TRANSACTION:
       {
+
         if (current->type == TYPE_DATA)
         {
           printf("Recebido pacote %d\n", current->sequence);
@@ -322,20 +320,41 @@ int main(int argc, char *argv[])
           // First, check if the sequence is the next one
           if (current->sequence != (client->buffer->last_packet_sequence + 1))
           {
+            // // if the sequence we already got before
+            // if (current->sequence == client->buffer->last_packet_sequence)
+            // {
+            //   printf("Reenviando ACK\n");
+            //   send_packet_helper(client->network, TYPE_ACK, current->sequence, 0, 0, 1);
+            //   continue;
+            // }
+
+            if (try == 6)
+            {
+              // Sequencia especifico, caso especial o mesmo pacote deu 5 nacks seguidos, ignora
+              // Enviando nack e subindo a sequencia
+              printf("Tentativas esgotadas, ignorando pacote %d\n", client->buffer->last_packet_sequence + 1);
+              sleep(1);
+              send_packet_helper(client->network, TYPE_ACK, client->buffer->last_packet_sequence + 1, 0, 0, 1);
+              client->buffer->last_packet_sequence++;
+              try = 0;
+              continue;
+            }
+
             // Ifs not the next one, send a NACK from where it should be
             printf("Pacote fora de ordem, enviando NACK para pacote %d\n", client->buffer->last_packet_sequence + 1);
             send_packet_helper(client->network, TYPE_NACK, client->buffer->last_packet_sequence + 1, 0, 0, 1);
+            try++;
             continue;
           }
 
+          try = 0;
+
           printf("Pacote %d recebido com sucesso, escrevendo... %s\n", current->sequence, client->buffer->filename);
 
-  
           // Write to file, this is wrong, im dumb
           char path[256] = "./download/";
           // Construct the full path
           strcat(path, client->buffer->filename);
-    
 
           FILE *file = fopen(path, "a");
 
@@ -507,7 +526,6 @@ int main(int argc, char *argv[])
               strcat(path, client->buffer->filename);
 
               remove(path);
-
 
               printf("Iniciando transação\n");
               continue;

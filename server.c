@@ -51,6 +51,25 @@ int filter(const struct dirent *name)
     return 0;
 }
 
+int compare_window_sequence(const void *a, const void *b)
+{
+  const window_t *window_a = *(const window_t **)a;
+  const window_t *window_b = *(const window_t **)b;
+
+  // Compare the sequence numbers in window_buffer
+  return (window_a->window_buffer->sequence - window_b->window_buffer->sequence);
+}
+
+// Function to sort the window array
+void sort_server_windows(server_t *server)
+{
+  // Fixed size of the window array is 5
+  size_t num_windows = 5;
+
+  // Sort the window array
+  qsort(server->window, num_windows, sizeof(server->window[0]), compare_window_sequence);
+}
+
 catalog_t *scan_movies(char *path)
 {
   catalog_t *catalog = (catalog_t *)malloc(sizeof(catalog_t));
@@ -419,6 +438,7 @@ int main(int argc, char *argv[])
           if (current->type == TYPE_ACK)
           {
             printf("Recebendo ack cur: %d\n", current->sequence);
+            
 
             // Search on the buffer for the pck with current_sequence
             for (int x = 0; x < 5; x++)
@@ -437,15 +457,20 @@ int main(int argc, char *argv[])
           {
             for (int x = 0; x < 5; x++)
             {
-              if (server->window[x]->window_buffer->sequence <= current->sequence)
+              if (server->window[x]->window_buffer->sequence < current->sequence)
               {
                 printf("Limpando buffer de seq: %d\n", server->window[x]->window_buffer->sequence);
                 server->window[x]->to_clear = 1;
               }
               else
               {
+                //   // We cant just resend everything, we need to send in order
+                sort_server_windows(server);
+
                 printf("Reenviando buffer de seq: %d\n", server->window[x]->window_buffer->sequence);
                 server->window[x]->sent = 0;
+
+                server->window[x]->window_buffer->crc = compute_crc8(server->window[x]->window_buffer->data, server->window[x]->window_buffer->size);
               }
             }
           }

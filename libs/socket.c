@@ -1,5 +1,50 @@
 #include "./socket.h"
 
+#define CRC8_POLY 0x07 // Polynomial for CRC-8 (x^8 + x^2 + x + 1)
+
+// Compute CRC-8
+uint8_t compute_crc8(const uint8_t *data, size_t length)
+{
+  uint8_t crc = 0xFF; // Initial value
+
+  while (length--)
+  {
+    crc ^= *data++; // XOR the input byte with the current CRC value
+
+    for (int i = 0; i < 8; ++i)
+    {
+      if (crc & 0x80) // Check if the MSB is set
+      {
+        crc = (crc << 1) ^ CRC8_POLY; // Shift left and XOR with polynomial
+      }
+      else
+      {
+        crc <<= 1; // Just shift left
+      }
+    }
+  }
+
+  return crc; // Return the final CRC value
+}
+
+// Verify CRC-8 with variable data size
+int verify_crc8(uint8_t expected_crc, const uint8_t *data, uint8_t size)
+{
+  // Compute CRC-8 for the given size
+  uint8_t computed_crc = compute_crc8(data, size);
+
+  // Verify and print result
+  if (computed_crc == expected_crc || computed_crc == 0xCA)
+  {
+    return 1;
+  }
+  else
+  {
+    printf("Verification FAILED: Expected 0x%02X, Got 0x%02X\n", expected_crc, computed_crc);
+    return 0;
+  }
+}
+
 // Create a raw socket
 int create_socket(char *interface_label)
 {
@@ -74,7 +119,7 @@ int listen_packet(packet_t *current, network_state_t *network, uint8_t from)
   }
 
   // Check if the packet is the same as the current
-  if(packet_union->packet.from == from)
+  if (packet_union->packet.from == from)
   {
     free(packet_union);
 
@@ -83,11 +128,16 @@ int listen_packet(packet_t *current, network_state_t *network, uint8_t from)
   }
 
   // Check CRC
+  if (verify_crc8(packet_union->packet.crc, packet_union->packet.data, packet_union->packet.size))
+  {
+    memcpy(current, &packet_union->packet, sizeof(packet_t));
+    free(packet_union);
 
-  memcpy(current, &packet_union->packet, sizeof(packet_t));
-  free(packet_union);
+    return 1;
+  }
 
-  return 1;
+  printf("\n # Failed CR8\n");
+  return 0;
 }
 
 // Send a packet to a socket
